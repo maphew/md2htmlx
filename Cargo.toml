@@ -1,17 +1,36 @@
 [package]
-name = "rust-md2html"                 # CLI name on crates.io
-version = "0.1.2"                # Start with 0.1.0
+name = "md2htmlx"
+version = "0.2.0"
 edition = "2021"
-authors = ["Hafiz Ali Raza haffizaliraza@gmail.com"]
-description = "A simple Rust CLI to convert Markdown to HTML with file watching"
+authors = [
+    "Matt Wilkie <matt.wilkie@yukon.ca>",
+    "Hafiz Ali Raza <haffizaliraza@gmail.com>",  # original author of rust-md2html
+]
+description = "A simple Rust CLI to convert Markdown to HTML5 (styled with simple.css), with optional file watching"
 license = "MIT OR Apache-2.0"
-documentation = "https://docs.rs/rust-md2html"
-repository = "https://github.com/haffizaliraza/rust-md2html"
+repository = "https://github.com/maphew/md2htmlx"
+homepage = "https://github.com/maphew/md2htmlx"
+documentation = "https://docs.rs/md2htmlx"
 readme = "README.md"
 keywords = ["markdown", "html", "cli", "rust"]
 categories = ["command-line-utilities", "text-processing"]
-homepage = "https://github.com/haffizaliraza/rust-md2html"
-exclude = [".gitignore", ".github/*"]
+
+# Files shipped to crates.io. We must include `assets/` because the binary
+# embeds simple.min.css at build time via `include_str!`.
+include = [
+    "src/**/*.rs",
+    "assets/simple.min.css",
+    "assets/simple.css.LICENSE",
+    "Cargo.toml",
+    "README.md",
+    "example.md",
+]
+
+# Forked with gratitude from https://github.com/haffizaliraza/rust-md2html
+# (© 2025 Hafiz Ali Raza, MIT/Apache-2.0).
+#
+# This crate also bundles simple.css (https://simplecss.org/, MIT-licensed,
+# © 2020 Kev Quirk). See assets/simple.css.LICENSE.
 
 [dependencies]
 pulldown-cmark = "0.10"

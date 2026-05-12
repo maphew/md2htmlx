@@ -28,8 +28,10 @@
 //! [rust-md2html](https://github.com/haffizaliraza/rust-md2html) by Hafiz Ali Raza.
 //! Bundles [simple.css](https://simplecss.org/) (© 2020 Kev Quirk, MIT).
 
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -83,8 +85,8 @@ struct Cli {
     /// Input Markdown file
     input: PathBuf,
 
-    /// Output HTML file (defaults to <input>.html alongside the input).
-    /// Existing files are overwritten.
+    /// Output HTML file (defaults to <input>.html alongside the input,
+    /// or to a temp directory when --open is used). Existing files are overwritten.
     #[arg(short, long)]
     output: Option<PathBuf>,
 
@@ -95,10 +97,76 @@ struct Cli {
     /// Emit only the raw HTML fragment (no <html>, <head>, <body>, no CSS)
     #[arg(short, long)]
     bare: bool,
+
+    /// Render to a temp directory and launch the system default browser.
+    /// The source folder is left untouched unless --output is given.
+    #[arg(long)]
+    open: bool,
 }
 
-fn derive_output(input: &PathBuf) -> PathBuf {
+fn derive_output(input: &Path) -> PathBuf {
     input.with_extension("html")
+}
+
+/// Stable per-source-path location under the OS temp dir, e.g.
+/// `%TEMP%\md2htmlx\<hash>\<stem>.html`. Re-opening the same source
+/// overwrites the same file rather than accumulating new ones.
+fn temp_output_for(input: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
+    let mut hasher = DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document");
+
+    let mut p = std::env::temp_dir();
+    p.push("md2htmlx");
+    p.push(format!("{:016x}", hash));
+    p.push(format!("{stem}.html"));
+    p
+}
+
+/// Build a `file://` URL for a directory, suitable for use as `<base href>`.
+/// Adds a trailing slash so relative refs resolve correctly. Performs minimal
+/// URL-encoding (just spaces) which is enough for typical filesystem paths.
+fn dir_to_file_url(dir: &Path) -> String {
+    let s = dir.to_string_lossy().replace('\\', "/");
+    // Strip Windows extended-length prefix (`\\?\C:\…` → `C:/…`) that
+    // `fs::canonicalize` produces; browsers don't understand `file:////?/...`.
+    let s = s.strip_prefix("//?/").unwrap_or(&s);
+    let s = s.trim_end_matches('/').replace(' ', "%20");
+    if s.starts_with('/') {
+        // Unix absolute path: /home/x → file:///home/x/
+        format!("file://{s}/")
+    } else {
+        // Windows drive path: A:/dev/x → file:///A:/dev/x/
+        format!("file:///{s}/")
+    }
+}
+
+/// Launch the platform's default handler for `path` (typically a web browser
+/// for `.html`). Non-blocking — the spawned process runs independently.
+fn launch_browser(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // The empty "" is the title arg that `start` requires when the
+        // first quoted arg would otherwise be interpreted as the title.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .spawn()?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn()?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()?;
+    }
+    Ok(())
 }
 
 fn render_markdown(markdown: &str) -> String {
@@ -124,13 +192,22 @@ fn derive_title(markdown: &str, fallback: &str) -> String {
     fallback.to_string()
 }
 
-fn wrap_html5(body: &str, title: &str) -> String {
+fn wrap_html5(body: &str, title: &str, base_href: Option<&str>) -> String {
+    // `<base href>` makes relative image/link refs in the rendered HTML resolve
+    // against the *source* directory even when the HTML lives elsewhere
+    // (e.g. when --open writes to %TEMP%). Must come before any element that
+    // references a URL, so we put it first inside <head>.
+    let base_tag = match base_href {
+        Some(href) => format!("<base href=\"{}\">\n", html_escape(href)),
+        None => String::new(),
+    };
     format!(
         "<!DOCTYPE html>\n\
          <html lang=\"en\">\n\
          <head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         {base_tag}\
          <title>{title}</title>\n\
          <style>\n{css}\n</style>\n\
          {theme_toggle}\
@@ -139,6 +216,7 @@ fn wrap_html5(body: &str, title: &str) -> String {
          <main>\n{body}\n</main>\n\
          </body>\n\
          </html>\n",
+        base_tag = base_tag,
         title = html_escape(title),
         css = SIMPLE_CSS,
         theme_toggle = THEME_TOGGLE, // ← THEME TOGGLE injection point (delete this line to remove)
@@ -153,7 +231,7 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn convert(input: &PathBuf, output: &PathBuf, bare: bool) {
+fn convert(input: &Path, output: &Path, bare: bool) {
     let markdown = match fs::read_to_string(input) {
         Ok(s) => s,
         Err(e) => {
@@ -171,8 +249,29 @@ fn convert(input: &PathBuf, output: &PathBuf, bare: bool) {
             .and_then(|s| s.to_str())
             .unwrap_or("Document");
         let title = derive_title(&markdown, fallback);
-        wrap_html5(&body, &title)
+
+        // Only inject <base href> when the output lives in a different
+        // directory from the source — otherwise relative refs already
+        // resolve correctly and a base tag would just add noise.
+        let base_href = match (
+            fs::canonicalize(input).ok().and_then(|p| p.parent().map(Path::to_path_buf)),
+            output.parent().and_then(|p| fs::canonicalize(p).ok()),
+        ) {
+            (Some(in_dir), Some(out_dir)) if in_dir != out_dir => Some(dir_to_file_url(&in_dir)),
+            _ => None,
+        };
+
+        wrap_html5(&body, &title, base_href.as_deref())
     };
+
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                eprintln!("❌ Failed to create {:?}: {}", parent, e);
+                return;
+            }
+        }
+    }
 
     if let Err(e) = fs::write(output, final_html) {
         eprintln!("❌ Failed to write to {:?}: {}", output, e);
@@ -183,9 +282,25 @@ fn convert(input: &PathBuf, output: &PathBuf, bare: bool) {
 
 fn main() -> notify::Result<()> {
     let args = Cli::parse();
-    let output = args.output.unwrap_or_else(|| derive_output(&args.input));
+
+    // Output precedence:
+    //   1. explicit --output           (always wins)
+    //   2. --open without --output     → temp dir (don't pollute the source folder)
+    //   3. neither                     → next to the input
+    let output = match (args.output.clone(), args.open) {
+        (Some(p), _) => p,
+        (None, true) => temp_output_for(&args.input),
+        (None, false) => derive_output(&args.input),
+    };
 
     convert(&args.input, &output, args.bare);
+
+    if args.open {
+        match launch_browser(&output) {
+            Ok(()) => println!("🌐 Opened {:?} in default browser", output),
+            Err(e) => eprintln!("⚠️  Failed to launch browser: {}", e),
+        }
+    }
 
     if !args.watch {
         return Ok(());

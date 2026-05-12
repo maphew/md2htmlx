@@ -75,7 +75,7 @@ the Markdown still resolve correctly.
 
 ### Examples
 
-Convert once and exit (default — produces a styled, standalone HTML5 page next to the input):
+Convert once and exit (default — produces a styled, standalone HTML5 page next to the input). The README.html in this repo is generated like this:
 
 ```bash
 md2htmlx input.md                    # writes input.html

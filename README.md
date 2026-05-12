@@ -108,6 +108,53 @@ in the source folder.
 
 ---
 
+## 🪟 Windows Explorer integration
+
+The repo ships two PowerShell helpers under [`scripts/`](scripts) that wire
+md2htmlx into Explorer for the current user only (no admin, no HKLM changes):
+
+```powershell
+# Add: an "Open with → md2htmlx" entry and a
+#      "Render with md2htmlx" right-click verb on .md files
+powershell -ExecutionPolicy Bypass -File .\scripts\install-explorer.ps1
+
+# Undo everything the install script did
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-explorer.ps1
+```
+
+The install script registers `md2htmlx-open.exe`, a tiny windows-subsystem
+wrapper built alongside `md2htmlx.exe`. The wrapper exists for one reason:
+when Explorer launches a normal console binary it briefly flashes a black
+console window. `md2htmlx-open.exe` runs as a GUI subsystem app and spawns
+`md2htmlx.exe --open` with `CREATE_NO_WINDOW`, so double-clicking a `.md`
+file opens straight in the browser with no flash. The regular CLI is
+unchanged — `md2htmlx.exe` from a terminal still prints to stdout normally.
+
+The install script auto-locates `md2htmlx-open.exe` via `PATH`, falling
+back to `target\release\md2htmlx-open.exe` next to the repo. Pass
+`-ExePath C:\path\to\md2htmlx-open.exe` to override. `md2htmlx.exe` must
+sit next to `md2htmlx-open.exe`; both are produced by `cargo build
+--release` and `cargo install md2htmlx`.
+
+It also generates a small `.ico` at `%LOCALAPPDATA%\md2htmlx\md.ico` by
+rendering a single Unicode character — by default Ⓜ (circled M) in a
+mid-tone blue chosen so it stays legible in both light and dark Explorer
+themes. Override either via parameters:
+
+```powershell
+.\scripts\install-explorer.ps1 -IconChar "📄" -IconColor "#E64A19"
+```
+
+`uninstall-explorer.ps1` removes the .ico (and its folder if empty)
+along with all the registry keys.
+
+To make md2htmlx the *default* `.md` handler after running the install
+script, right-click a `.md` file → **Open with → Choose another app** →
+pick **md2htmlx** → tick **Always use this app**. Windows requires that
+last step to be done interactively.
+
+---
+
 ## 🎨 Default output
 
 The default (non-`--bare`) output is a complete HTML5 document:
